@@ -25,7 +25,7 @@
       <li>地面を掘ると、その跡が通路になります。うっすら見えている CNP を掘り当てると救出</li>
       <li>敵は忍具（長押し）で縛りきって倒すか、真下を掘って岩を落としてつぶします。縛られている敵には触れても平気</li>
       <li>時間がたつと、30秒ごとに敵が少しずつ速くなります（5段まで。左上の SPEED の目盛り）</li>
-      <li>赤い鬼は、縦か横に並ぶと0.3秒止まってから手裏剣を投げてきます（3マス飛び、土も抜ける）。列をずらすか、忍具の縄で叩き落とそう</li>
+      <li>忍者は、縦か横に並ぶと0.3秒止まってから手裏剣を投げてきます（3マス飛び、土も抜ける）。列をずらすか、忍具の縄で叩き落とそう</li>
       <li>その層の CNP をそろえると下への穴が開きます。3層で 11体そろえたら、地上の出口へ</li>
       <li>スマホ: 左半分を押したまま倒して移動（掘る） ・ 右下の X を長押しで忍具</li>
       <li>PC: 矢印 / WASD で移動（掘る） ・ X（長押し）で忍具 ・ P 一時停止 ・ M 音</li>
@@ -61,7 +61,7 @@
         bands: [["magenta", 0.2], ["danger", 0.2], ["magenta", 0.15], ["dim", 0.22]] },
     ];
 
-    // 手裏剣: 赤い鬼だけが投げる。縦か横に並ぶと 0.3秒止まって構えてから投げ、3マス飛ぶ（土も抜ける）。
+    // 手裏剣: 忍者だけが投げる。縦か横に並ぶと 0.3秒止まって構えてから投げ、3マス飛ぶ（土も抜ける）。
     // 忍具の縄に当たると止められる
     const SHURIKEN = { reach: T * 3, speed: 3.5, windup: 18, sight: T * 4.5, blockPts: 50 };
 
@@ -895,8 +895,35 @@
         ["..BBB..BBB..", "..BBB...BB.."],
       ],
     };
-    const SAKUYA_W = 12, SAKUYA_H = 14;
     let sakuyaSprites = null;
+    // ドットの地図（文字列の配列）を 1ドット = 1px の canvas にする。まわりに 1ドットのふちを付ける
+    // （暗い通路でも黒い体の形が見えるように）。pal は文字ごとに重ねて塗る色の配列
+    function makeSprite(lines, pal, outline) {
+      const w = Math.max(...lines.map((l) => l.length)), h = lines.length;
+      const cv = document.createElement("canvas");
+      cv.width = w + 2;
+      cv.height = h + 2;
+      const g = cv.getContext("2d");
+      const cells = [];
+      lines.forEach((line, y) => [...line].forEach((ch, x) => { if (ch !== ".") cells.push([x + 1, y + 1, ch]); }));
+      g.fillStyle = outline;
+      for (const [x, y] of cells) for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) g.fillRect(x + dx, y + dy, 1, 1);
+      for (const [x, y, ch] of cells) {
+        for (const col of pal[ch]) {
+          g.fillStyle = col;
+          g.fillRect(x, y, 1, 1);
+        }
+      }
+      return cv;
+    }
+    // 2コマの地図（行が [0コマ目, 1コマ目] の配列になっているところだけ入れ替える）から、向きごとの絵を作る
+    function makeSprites(maps, pal, outline) {
+      const out = {};
+      for (const [dir, rows] of Object.entries(maps)) {
+        out[dir] = [0, 1].map((frame) => makeSprite(rows.map((r) => (Array.isArray(r) ? r[frame] : r)), pal, outline));
+      }
+      return out;
+    }
     function buildSakuya(k) {
       const c = k.retro.colors, a = k.retro.alpha;
       // 黒は背景に沈むので、髪と黒い布は少し青みの灰色に持ち上げる。肌は白に金と桃を重ねて温かく
@@ -904,42 +931,24 @@
         K: [c.bg, a(c.dim, 0.5)], H: [c.dim], R: [c.danger], S: [c.ink, a(c.gold, 0.35), a(c.magenta, 0.08)],
         E: [c.bg], P: [c.magenta], B: [c.bg, a(c.dim, 0.24)], G: [c.gold],
       };
-      const out = {};
-      for (const [dir, rows] of Object.entries(SAKUYA_MAPS)) {
-        out[dir] = [0, 1].map((frame) => {
-          const lines = rows.map((r) => (Array.isArray(r) ? r[frame] : r));
-          // 1ドット = 1px で描き、まわりに 1ドットのふちを足す（暗い通路でも黒髪の形が見えるように）
-          const cv = document.createElement("canvas");
-          cv.width = SAKUYA_W + 2;
-          cv.height = SAKUYA_H + 2;
-          const g = cv.getContext("2d");
-          const cells = [];
-          lines.forEach((line, y) => [...line].forEach((ch, x) => { if (ch !== ".") cells.push([x + 1, y + 1, ch]); }));
-          g.fillStyle = a(c.ink, 0.4);
-          for (const [x, y] of cells) for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) g.fillRect(x + dx, y + dy, 1, 1);
-          for (const [x, y, ch] of cells) {
-            for (const col of pal[ch]) {
-              g.fillStyle = col;
-              g.fillRect(x, y, 1, 1);
-            }
-          }
-          return cv;
-        });
-      }
-      return out;
+      return makeSprites(SAKUYA_MAPS, pal, a(c.ink, 0.4));
     }
-    // (x, y) は体の中心。scale は1ドットの大きさ（ゲーム中は 2）
-    function drawSakuya(ctx, k, x, y, face, frame, scale) {
-      if (!sakuyaSprites) sakuyaSprites = buildSakuya(k);
+    // 向き（face）から絵を選んで (x, y) を中心に描く。左向きは右向きを裏返す
+    function drawSprite(ctx, sprites, x, y, face, frame, scale) {
       const dir = face.y < 0 ? "up" : face.y > 0 ? "down" : "right";
-      const img = sakuyaSprites[dir][frame];
+      const img = sprites[dir][frame];
       const w = img.width * scale, h = img.height * scale;
       ctx.save();
       ctx.imageSmoothingEnabled = false;
       ctx.translate(Math.round(x), Math.round(y));
-      if (face.x < 0) ctx.scale(-1, 1); // 左向きは右向きを裏返す
+      if (face.x < 0) ctx.scale(-1, 1);
       ctx.drawImage(img, -w / 2, -h / 2 - scale, w, h);
       ctx.restore();
+    }
+    // (x, y) は体の中心。scale は1ドットの大きさ（ゲーム中は 2）
+    function drawSakuya(ctx, k, x, y, face, frame, scale) {
+      if (!sakuyaSprites) sakuyaSprites = buildSakuya(k);
+      drawSprite(ctx, sakuyaSprites, x, y, face, frame, scale);
     }
 
     // 左上のスコアの下に、いまの速さの段（5つの目盛り）
@@ -981,43 +990,114 @@
       ctx.fillRect(-1, -1, 2, 2);
       ctx.restore();
     }
+    // ===== 敵のドット絵 =====
+    // 忍者（手裏剣を投げる方）: 黒装束に鉄の額当て（菱の鋲3つ）、覆面、灰色の帯と籠手。怒り目
+    //   N 黒装束  M 鉄  D 鋲  S 肌  E 目  L 帯
+    const NINJA_MAPS = {
+      down: [
+        "...NNNNNN...",
+        "..NNNNNNNN..",
+        "NNMMMMMMMMN.",
+        "N.MDMMDMMDN.",
+        "..NNNNNNNNN.",
+        ".NSSSSSSSSN.",
+        ".NSEESSEESN.",
+        ".NNNNNNNNNN.",
+        "..NNNNNNNN..",
+        ".NNNSNNSNNN.",
+        "SMNNNLLNNNMS",
+        ".MNLLLLLLNM.",
+        "..NNNNNNNN..",
+        ["..NN....NN..", "..NN...NN..."],
+      ],
+      right: [
+        "....NNNNN...",
+        "...NNNNNNN..",
+        "..NNNNMMMMN.",
+        "NNNNNNMDMMN.",
+        ".NNNNNNNNNN.",
+        "..NNNNNSSSN.",
+        "..NNNNNSESN.",
+        "..NNNNNNNNN.",
+        "...NNNNNNN..",
+        "....NNNNNN..",
+        "....MNNSNM..",
+        "....NLLLLN..",
+        "....NNNNNN..",
+        ["....NN.NN...", "...NN...NN.."],
+      ],
+      up: [
+        "...NNNNNN...",
+        "..NNNNNNNN..",
+        ".NNNNNNNNNN.",
+        ".NNNNLLNNNN.",
+        ".NNNLNNLNNN.",
+        ".NNNNNNNNNN.",
+        ".NNNNNNNNNN.",
+        "..NNNNNNNN..",
+        "..NNNNNNNN..",
+        ".NNNNNNNNNN.",
+        "SMNNNNNNNNMS",
+        ".MLLLLLLLLM.",
+        "..NNNNNNNN..",
+        ["..NN....NN..", "..NN...NN..."],
+      ],
+    };
+    // ぬばたまの妖怪: 墨のような黒い玉。頭から黒い炎がゆらぎ、赤いひびと赤い目。足もとに墨の波
+    //   O 体  X 炎と波  C ひび  R 目
+    const NUBA_BODY = [
+      [".....X......", "......X....."],
+      ["....XX.X....", "...X.XX....."],
+      "...XXXXX....",
+      "..OOOOOOOO..",
+      ".OOOOOOOCOO.",
+      "OOOOOOOCOOOO",
+      "OOOOOOOCOOOO",
+      null, // 目の行（向きで変える）
+      "OOOOOOOOCOOO",
+      "OOOOOOOOOOOO",
+      ".OOOOOOOOOO.",
+      ["X.OOOOOOOO.X", "..OOOOOOOO.."],
+      [".XXXXXXXXXX.", "X.XXXXXXXX.X"],
+    ];
+    const nubaMap = (eyes) => NUBA_BODY.map((r) => (r === null ? eyes : r));
+    const NUBA_MAPS = { down: nubaMap("OORROOOORROO"), right: nubaMap("OOOOOORROORR"), up: nubaMap("OOOOOOOOOOOO") };
+
+    let enemySprites = null;
+    function buildEnemies(k) {
+      const c = k.retro.colors, a = k.retro.alpha;
+      const skin = [c.ink, a(c.gold, 0.35), a(c.magenta, 0.08)];
+      const ninja = { N: [c.bg, a(c.dim, 0.3)], M: [c.bg, a(c.dim, 0.85)], D: [c.bg], S: skin, E: [c.bg], L: [c.bg, a(c.dim, 0.6)] };
+      const nuba = { O: [c.bg, a(c.magenta, 0.1), a(c.dim, 0.14)], X: [c.bg, a(c.magenta, 0.2), a(c.dim, 0.22)], C: [c.danger], R: [c.danger] };
+      // 咲耶と見分けやすいよう、ふちは忍者が赤、ぬばたまが紫。構えて光るとき用に白い影も作る
+      const flash = (maps) => makeSprites(maps, new Proxy({}, { get: () => [c.ink] }), c.ink);
+      return {
+        1: makeSprites(NINJA_MAPS, ninja, a(c.danger, 0.75)),
+        0: makeSprites(NUBA_MAPS, nuba, a(c.magenta, 0.55)),
+        flash1: flash(NINJA_MAPS),
+      };
+    }
+
     function drawEnemy(ctx, k, e) {
       const { colors } = k.retro;
-      const body = e.windup > 0 && k.frame % 6 < 3 ? colors.ink : e.kind ? colors.danger : colors.magenta;
+      if (!enemySprites) enemySprites = buildEnemies(k);
       if (e.mode === "ghost") {
-        // 土の中では目だけ
-        ctx.fillStyle = colors.ink;
+        // 土の中では目だけ（忍者は白い目、ぬばたまは赤い目）
+        ctx.fillStyle = e.kind ? colors.ink : colors.danger;
         const bl = k.frame % 20 < 10;
-        ctx.fillRect(e.x - 7, e.y - 3, 5, bl ? 5 : 2);
-        ctx.fillRect(e.x + 2, e.y - 3, 5, bl ? 5 : 2);
+        ctx.fillRect(e.x - 7, e.y - 3, 5, bl ? 4 : 2);
+        ctx.fillRect(e.x + 2, e.y - 3, 5, bl ? 4 : 2);
         return;
       }
       const puff = e.bind * 2.5; // 縛るほどもがいてふくらむ
       const r = 12 + puff;
       const shake = e.bind > 0 ? (k.frame % 4 < 2 ? -1 : 1) : 0;
       const x = e.x + shake, y = e.y;
-      ctx.fillStyle = body;
-      ctx.beginPath();
-      ctx.arc(x, y + 1, r, 0, Math.PI * 2);
-      ctx.fill();
-      // 角
-      ctx.fillStyle = colors.gold;
-      ctx.beginPath();
-      ctx.moveTo(x - 8, y - r + 5);
-      ctx.lineTo(x - 5, y - r - 5);
-      ctx.lineTo(x - 2, y - r + 3);
-      ctx.moveTo(x + 2, y - r + 3);
-      ctx.lineTo(x + 5, y - r - 5);
-      ctx.lineTo(x + 8, y - r + 5);
-      ctx.fill();
-      // 目
-      ctx.fillStyle = colors.ink;
-      ctx.fillRect(x - 7, y - 4, 5, 5);
-      ctx.fillRect(x + 2, y - 4, 5, 5);
-      ctx.fillStyle = colors.bg;
-      const dx = e.dir ? e.dir.x : 0, dy = e.dir ? e.dir.y : 0;
-      ctx.fillRect(x - 6 + dx * 2, y - 3 + dy, 2, 3);
-      ctx.fillRect(x + 3 + dx * 2, y - 3 + dy, 2, 3);
+      const face = e.dir || { x: 0, y: 1 };
+      const frame = e.bind > 0 ? 0 : Math.floor((k.frame + e.home.c * 7) / 12) % 2;
+      const scale = 2 + e.bind * 0.2;
+      const flashing = e.windup > 0 && k.frame % 6 < 3;
+      drawSprite(ctx, flashing ? enemySprites.flash1 : enemySprites[e.kind], x, y, face, frame, scale);
       // 縛りの縄
       if (e.bind > 0) {
         ctx.strokeStyle = colors.gold;
