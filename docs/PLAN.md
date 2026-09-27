@@ -59,7 +59,7 @@
 - [ ] プロト OK（中心の遊び）← プロト v1 を確認中
 - [ ] 仕上げ
 - [x] OGP・アイコン（OGP は key-visual から make-assets で作成・上寄せ --ogp-y 0.2。アイコンはシリーズと同じ作りのツルハシ: tools/mkicon.mjs）
-- [ ] 本番公開（仮公開中: GitHub Pages の naonao1971.github.io/SakuyaDig。本番で CNAME に dig.naoblock.jp を戻す）
+- [ ] 本番公開（dig.naoblock.jp を取得・CNAME を戻した。DNS と HTTPS を確認中）
 - [ ] わいわいタウン掲載・告知
 
 ## プロト v1 で入れたもの（2026-09-27）
