@@ -45,7 +45,7 @@
 ## 演出・素材
 - キービジュアル: 有（key-visual.jpg。縦持ち案内と OGP に使う）
 - クリア動画 / ゲームオーバー動画: 無（あとで用意）
-- BGM: なし（効果音は kit.sfx の定番）
+- BGM: 自前のチップチューン（都節の8小節ループ・矩形波メロディ＋三角波ベース＋ノイズ。kit.sfx で鳴らすのでミュート連動。SPEED でテンポも上がる）
 
 ## kit の設定（決まったら書く）
 - controls: stick（`stickDigital4`、左半分）、buttons: 忍具 `{ id: "tool", label: "X", keys: ["KeyX"], primary: true }`、autoFire なし

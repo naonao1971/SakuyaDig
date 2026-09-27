@@ -567,6 +567,7 @@
     function afterDeath() {
       if (kit.lives.lose() <= 0) {
         game.state = "over";
+        bgmStop();
         kit.gameOver({ cleared: false, progress: (kit.cnp.run.count / 11) * 100 });
         return;
       }
@@ -598,6 +599,7 @@
           game.bonus = { all: PTS.allCnp, lives, perLife: PTS.perLife };
           kit.score.add(PTS.allCnp + lives * PTS.perLife);
           game.state = "clear";
+          bgmStop();
           game.t = 150;
           kit.sfx.clear();
         } else {
@@ -608,12 +610,78 @@
       }
     }
 
+    // ===== BGM =====
+    // 音声ファイルは使わず、kit の効果音と同じ音源（kit.sfx）で鳴らす。🔊 / M でいっしょに消える。
+    // 和風の音階（都節: レ・ミ♭・ソ・ラ・シ♭）の8小節ループ。メロディは矩形波、ベースは三角波、裏拍にノイズ。
+    // 1マス = 8分音符。敵が速くなる（SPEED）たびにテンポも少し上がる
+    const BGM_BPM = 138;
+    const NOTE = { C: 0, D: 2, Eb: 3, E: 4, F: 5, G: 7, A: 9, Bb: 10, B: 11 };
+    const freqOf = (name) => {
+      const m = /^([A-G]b?)(\d)$/.exec(name);
+      return 440 * Math.pow(2, (NOTE[m[1]] + (+m[2] + 1) * 12 - 69) / 12);
+    };
+    // "." は休み、"-" は前の音をのばす
+    const BGM_LEAD = [
+      "D5 . A4 . Bb4 A4 G4 .", "A4 - - . D5 . Eb5 .", "D5 . Bb4 . A4 G4 A4 .", "D4 - - - . . . .",
+      "G4 . A4 . Bb4 . D5 .", "Eb5 . D5 Bb4 A4 . G4 .", "A4 . Bb4 A4 G4 . Eb4 .", "D4 - - - . . A4 .",
+    ].join(" ").split(" ");
+    const BGM_ROOTS = ["D2", "D2", "G2", "D2", "G2", "Eb2", "A2", "D2"]; // 小節ごとのベースの音
+    const BGM_BASS = [0, null, 12, null, 0, null, 12, 7]; // 根音からの半音数（null は休み）
+    const bgm = { on: false, step: 0, next: 0, timer: null };
+
+    function bgmStart() {
+      const ctx = kit.sfx.ctx;
+      if (!ctx || bgm.on) return;
+      bgm.on = true;
+      bgm.next = ctx.currentTime + 0.08;
+      bgm.timer = setInterval(bgmTick, 25);
+    }
+    function bgmStop() {
+      bgm.on = false;
+      clearInterval(bgm.timer);
+    }
+    // 少し先（0.15秒）までの音をまとめて予約する（setInterval の揺れで音がもたつかないように）
+    function bgmTick() {
+      const ctx = kit.sfx.ctx;
+      if (!bgm.on || !ctx) return;
+      const eighth = 60 / (BGM_BPM * (1 + game.speedLv * 0.04)) / 2;
+      while (bgm.next < ctx.currentTime + 0.15) {
+        bgmNote(bgm.step, bgm.next - ctx.currentTime, eighth);
+        bgm.next += eighth;
+        bgm.step = (bgm.step + 1) % BGM_LEAD.length;
+      }
+    }
+    function bgmNote(i, delay, eighth) {
+      const sfx = kit.sfx;
+      if (delay < 0) return;
+      // メロディ（のばす長さを数える）
+      const n = BGM_LEAD[i];
+      if (n !== "." && n !== "-") {
+        let len = 1;
+        while (BGM_LEAD[(i + len) % BGM_LEAD.length] === "-") len++;
+        sfx.tone({ freq: freqOf(n), dur: eighth * len * 0.92, type: "square", gain: 0.045, delay });
+      }
+      // ベース
+      const bar = Math.floor(i / 8), beat = i % 8;
+      const off = BGM_BASS[beat];
+      if (off !== null) {
+        const f = freqOf(BGM_ROOTS[bar]) * Math.pow(2, off / 12);
+        sfx.tone({ freq: f, dur: eighth * 0.9, type: "triangle", gain: 0.13, delay });
+      }
+      // リズム: 表拍の頭に低い音、裏拍にノイズ
+      if (beat === 0 || beat === 4) sfx.tone({ freq: 120, to: 45, dur: 0.09, type: "triangle", gain: 0.16, delay });
+      if (beat % 2 === 1) sfx.noise({ dur: 0.035, gain: 0.03, delay, filterFrom: 9000, filterTo: 6000 });
+    }
+
     function onStart() {
       game.layer = 0;
       game.bonus = null;
       buildLayer(0);
       game.state = "intro";
       game.t = 120;
+      bgmStop();
+      bgm.step = 0;
+      bgmStart();
     }
 
     const kit = createKit({
@@ -643,6 +711,7 @@
       },
       cutscenes: {},
       onStart,
+      onPause: (paused) => (paused ? bgmStop() : game.state !== "over" && game.state !== "clear" && bgmStart()),
 
       update() {
         if (game.state === "intro") {
