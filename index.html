@@ -24,7 +24,7 @@
     <ul>
       <li>地面を掘ると、その跡が通路になります。うっすら見えている CNP を掘り当てると救出</li>
       <li>敵は忍具（長押し）で縛りきって倒すか、真下を掘って岩を落としてつぶします。縛られている敵には触れても平気</li>
-      <li>赤い鬼は、縦か横に並ぶと構えてから手裏剣を投げてきます（3マス飛び、土も抜ける）。構えが見えたら列をずらそう</li>
+      <li>赤い鬼は、縦か横に並ぶと0.3秒止まってから手裏剣を投げてきます（3マス飛び、土も抜ける）。列をずらすか、忍具の縄で叩き落とそう</li>
       <li>その層の CNP をそろえると下への穴が開きます。3層で 11体そろえたら、地上の出口へ</li>
       <li>スマホ: 左半分を押したまま倒して移動（掘る） ・ 右下の X を長押しで忍具</li>
       <li>PC: 矢印 / WASD で移動（掘る） ・ X（長押し）で忍具 ・ P 一時停止 ・ M 音</li>
@@ -60,8 +60,9 @@
         bands: [["magenta", 0.2], ["danger", 0.2], ["magenta", 0.15], ["dim", 0.22]] },
     ];
 
-    // 手裏剣: 赤い鬼だけが投げる。縦か横に並ぶと少し構えてから投げ、3マス飛ぶ（土も抜ける）
-    const SHURIKEN = { reach: T * 3, speed: 3.5, windup: 30, sight: T * 4.5 };
+    // 手裏剣: 赤い鬼だけが投げる。縦か横に並ぶと 0.3秒止まって構えてから投げ、3マス飛ぶ（土も抜ける）。
+    // 忍具の縄に当たると止められる
+    const SHURIKEN = { reach: T * 3, speed: 3.5, windup: 18, sight: T * 4.5, blockPts: 50 };
 
     const PTS = { dig: 10, cnp: 300, crush: [0, 500, 1500, 3000], allCnp: 5000, perLife: 1000 };
 
@@ -296,7 +297,7 @@
     // 土には通らない。離すと縄は戻り、縛られた敵は少しずつほどける
     function updateTool() {
       const p = game.p;
-      if (!p.tool) p.tool = { len: 0, dir: { ...p.face }, target: null, miss: 0, done: false };
+      if (!p.tool) p.tool = { len: 0, dir: { ...p.face }, target: null, stuck: false, done: false };
       const tl = p.tool;
       if (tl.done) return;
       if (tl.target) {
@@ -311,23 +312,26 @@
         }
         return;
       }
-      if (tl.miss > 0) { if (--tl.miss === 0) tl.done = true; return; }
-      if (tl.len === 0) kit.sfx.shot();
-      tl.len = Math.min(TOOL_REACH, tl.len + 8);
-      const tipX = p.x + tl.dir.x * (14 + tl.len), tipY = p.y + tl.dir.y * (14 + tl.len);
+      if (tl.len === 0 && !tl.stuck) kit.sfx.shot();
+      if (!tl.stuck) {
+        tl.len = Math.min(TOOL_REACH, tl.len + 8);
+        const tipX = p.x + tl.dir.x * (14 + tl.len), tipY = p.y + tl.dir.y * (14 + tl.len);
+        // 土に当たるか届ききったら、そこで止めて張ったままにする（押している間は手裏剣を叩き落とせる）
+        if (!isOpen(tipX, tipY)) { tl.len = Math.max(0, tl.len - 8); tl.stuck = true; }
+        else if (tl.len >= TOOL_REACH) tl.stuck = true;
+      }
+      // 張った縄に敵が入ってきても絡む
       const hit = game.enemies.find((e) => e.alive && !e.crushed && e.mode === "walk" && segHit(p, tl.dir, 14 + tl.len, e));
       if (hit) {
         tl.target = hit;
         hit.bind = Math.max(hit.bind, 1);
         kit.sfx.hit();
-        return;
       }
-      if (!isOpen(tipX, tipY) || tl.len >= TOOL_REACH) tl.miss = 10;
     }
-    function segHit(p, d, reach, e) {
+    function segHit(p, d, reach, e, width = 14) {
       const along = (e.x - p.x) * d.x + (e.y - p.y) * d.y;
       const side = Math.abs((e.x - p.x) * d.y - (e.y - p.y) * d.x);
-      return along > 0 && along < reach + 12 && side < 14;
+      return along > 0 && along < reach + 12 && side < width;
     }
 
     function defeatEnemy(e, pts) {
@@ -414,6 +418,16 @@
         s.left -= step;
         s.spin += 0.4;
         if (game.rocks.some((k) => (k.state === "idle" || k.state === "wobble") && Math.abs(k.x - s.x) < 14 && Math.abs(k.y - s.y) < 14)) s.left = 0;
+        // 伸ばしている縄に当たったら叩き落とす
+        const tl = p.tool;
+        if (s.left > 0 && p.state === "alive" && tl && !tl.done && segHit(p, tl.dir, 14 + tl.len, s, 10)) {
+          s.left = 0;
+          game.pops.push({ x: s.x, y: s.y - 6, t: 30, text: String(SHURIKEN.blockPts) });
+          kit.score.add(SHURIKEN.blockPts);
+          kit.sfx.tone({ freq: 1800, dur: 0.05, type: "square", gain: 0.12 });
+          kit.sfx.tone({ freq: 1200, dur: 0.08, type: "square", gain: 0.1, delay: 0.05 });
+          continue;
+        }
         if (p.state === "alive" && p.inv === 0 && Math.hypot(p.x - s.x, p.y - s.y) < 13) {
           s.left = 0;
           killPlayer();
