@@ -234,19 +234,21 @@
       return null;
     }
     function rockBlocks(x, y) {
-      return game.rocks.some((k) => k.state !== "gone" && k.state !== "land" && Math.abs(k.x - x) < 30 && Math.abs(k.y - y) < 30);
+      return game.rocks.some((k) => k.state !== "gone" && k.state !== "land" && Math.abs(k.x - x) < T && Math.abs(k.y - y) < T);
     }
-    // 1px 進む。曲がりたいのに升目の線に乗っていなければ、乗るまで今の向きで進む（ディグダグと同じ）
+    // 岩は隣のマスの中心までは近づける（升目の線の上で止まるので、そこから左右・上下へ曲がれる）
+    // 1px 進む。曲がりたいのに升目の線に乗っていなければ、乗るまで今の向きで進む（ディグダグと同じ）。
+    // その向きがふさがっていたら、逆向きに戻って線に乗る（岩や壁の手前で動けなくならないように）
     function stepPlayer(d) {
       const p = game.p;
       const offX = (p.x - T / 2) % T, offY = (p.y - T / 2) % T;
       let m = d;
       if (d.x && offY !== 0) m = p.face.y ? { x: 0, y: p.face.y } : { x: 0, y: offY < T / 2 ? -1 : 1 };
       else if (d.y && offX !== 0) m = p.face.x ? { x: p.face.x, y: 0 } : { x: offX < T / 2 ? -1 : 1, y: 0 };
-      const nx = p.x + m.x, ny = p.y + m.y;
+      if (m !== d && !canStep(m)) m = { x: -m.x, y: -m.y };
       p.face = m;
-      if (nx < T / 2 || nx > COLS * T - T / 2 || ny < T / 2 || ny > ROWS * T - T / 2) return false;
-      if (rockBlocks(nx, ny) && !rockBlocks(p.x, p.y)) return false;
+      if (!canStep(m)) return false;
+      const nx = p.x + m.x, ny = p.y + m.y;
       p.x = nx;
       p.y = ny;
       carve(p.x, p.y);
@@ -256,6 +258,12 @@
         kit.score.add(PTS.dig);
       }
       return true;
+    }
+    function canStep(m) {
+      const p = game.p;
+      const nx = p.x + m.x, ny = p.y + m.y;
+      if (nx < T / 2 || nx > COLS * T - T / 2 || ny < T / 2 || ny > ROWS * T - T / 2) return false;
+      return !(rockBlocks(nx, ny) && !rockBlocks(p.x, p.y));
     }
     function updatePlayer() {
       const p = game.p;
@@ -822,7 +830,7 @@
     document.querySelector(".sk-leaderboard").before(document.getElementById("how"));
     window.kit = kit; // デバッグ用・playtest が読む（消さない）
     window.dig = game; // デバッグ用
-    window.digDebug = { carve, cx, cy, T, FY }; // デバッグ用（自動テストが使う）
+    window.digDebug = { carve, cx, cy, T, FY, stepPlayer, canStep }; // デバッグ用（自動テストが使う）
   </script>
 </body>
 </html>
