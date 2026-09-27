@@ -47,7 +47,7 @@
     const FY = 76; // 盤面の上端（上は HUD）
     const S = 4, SC = (COLS * T) / S, SR = (ROWS * T) / S;
     const DIG_HALF = 12; // 掘る幅の半分
-    const LATE_TURN = 12; // 曲がるのが遅れても戻って曲がれる幅（px。約1/3マス）
+    const CORNER = 12; // 升目の線からこの距離（px。約1/3マス）以内なら、角を斜めに切って曲がれる
     const TOOL_REACH = 112; // 忍具の届く長さ（3.5マス）
     const BIND_MAX = 4; // この段まで縛ると倒せる
     const START = { c: 15, r: 0 };
@@ -262,33 +262,35 @@
       const p = game.p;
       const offX = (p.x - T / 2) % T, offY = (p.y - T / 2) % T;
       let m = d;
+      let turning = false;
       if (d.x && d.y) {
         // 斜め: 升目の交点に来るたびに進む軸を入れ替える（1マスずつのきれいな階段になる）。
         // 交点の間は、乗っている線に沿って斜めの向きの成分へ進む
         if (offX === 0 && offY === 0) {
           m = p.face.x ? { x: 0, y: d.y } : { x: d.x, y: 0 };
           if (!canStep(m)) m = m.x ? { x: 0, y: d.y } : { x: d.x, y: 0 };
-        } else m = offY === 0 ? { x: d.x, y: 0 } : { x: 0, y: d.y };
-        p.snap = false;
+        } else if (offY === 0) m = { x: d.x, y: 0 };
+        else if (offX === 0) m = { x: 0, y: d.y };
+        // 角を曲がっている途中（どちらの線にも乗っていない）: 横へ進みつつ近い方の横線へ寄せる
+        else m = { x: d.x, y: offY < T / 2 ? -1 : 1 };
       } else {
         // 曲がりたい向きと直角に進んでいて、まだ升目の線に乗っていないとき:
-        // 押した瞬間に線を少しだけ（LATE_TURN 以内）通り過ぎていたら、戻って線に乗る（押すのが少し遅れても次の線まで行かない）。
-        // それ以外は今の向きのまま次の線まで進む
-        const along = d.x ? { off: offY, f: p.face.y } : { off: offX, f: p.face.x };
-        if (along.off === 0) p.snap = false;
-        else {
-          const f = along.f || (along.off < T / 2 ? -1 : 1);
-          const passed = f > 0 ? along.off : T - along.off; // 後ろの線からどれだけ進んだか
-          if (p.freshTurn && passed <= LATE_TURN) p.snap = true;
-          const dir = p.snap ? -f : f;
-          m = d.x ? { x: 0, y: dir } : { x: dir, y: 0 };
+        // 線まで CORNER 以内なら（手前でも、少し通り過ぎていても）角を斜めに切って曲がる（パックマン式）。
+        // 後ろへ戻る動きが出ないので、階段状に歩いてもなめらかに見える。それより遠ければ今の向きのまま次の線まで進む
+        const off = d.x ? offY : offX;
+        if (off !== 0) {
+          const f = (d.x ? p.face.y : p.face.x) || (off < T / 2 ? -1 : 1);
+          const passed = f > 0 ? off : T - off; // 後ろの線からどれだけ進んだか
+          if (passed <= CORNER || T - passed <= CORNER) {
+            const toLine = passed <= T - passed ? -f : f; // 近い方の線へ
+            const cut = d.x ? { x: d.x, y: toLine } : { x: toLine, y: d.y };
+            m = canStep(cut) ? cut : d.x ? { x: 0, y: toLine } : { x: toLine, y: 0 };
+            turning = true;
+          } else m = d.x ? { x: 0, y: f } : { x: f, y: 0 };
         }
-        p.freshTurn = false;
       }
-      if (m !== d && !canStep(m)) m = { x: -m.x, y: -m.y };
-      // 戻るときは向きを変えない（絵が一瞬振り返らないように。次の 1px でも同じ判断が続く）
-      const back = p.snap && m.x === -p.face.x && m.y === -p.face.y;
-      if (!back) p.face = m;
+      if (m !== d && !turning && !canStep(m)) m = { x: -m.x, y: -m.y };
+      p.face = turning ? d : m.x && m.y ? { x: m.x, y: 0 } : m;
       if (!canStep(m)) return false;
       const nx = p.x + m.x, ny = p.y + m.y;
       p.x = nx;
@@ -317,11 +319,7 @@
       }
       p.tool = null;
       const d = wantDir();
-      // 向きの入力が変わった瞬間だけ「曲がり遅れの戻り」を許す（押しっぱなしで行ったり来たりしないように）
-      const last = p.lastWant;
-      p.lastWant = d;
-      if (!d) { p.snap = false; return; }
-      if (!last || last.x !== d.x || last.y !== d.y) { p.freshTurn = true; p.snap = false; }
+      if (!d) return;
       // 前が土なら少し遅い
       const digging = !isOpen(p.x + p.face.x * 14, p.y + p.face.y * 14);
       p.acc += digging ? 1.5 : 2;
