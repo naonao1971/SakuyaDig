@@ -238,16 +238,19 @@
     }
 
     // ===== 咲耶 =====
+    // 入力の向き。キー2つ同時や、スティックを斜め（約27°〜63°）に倒しているときは斜め {x, y} を返す
     function wantDir() {
-      const a = kit.input.axis();
-      const ax = Math.abs(a.x) > 0.2 ? Math.sign(a.x) : 0;
-      const ay = Math.abs(a.y) > 0.2 ? Math.sign(a.y) : 0;
-      const p = game.p;
-      // 2方向同時なら、いま進んでいる向きと直角な方（＝曲がりたい方）を取る
-      if (ax && ay) return p.face.x ? { x: 0, y: ay } : { x: ax, y: 0 };
-      if (ax) return { x: ax, y: 0 };
-      if (ay) return { x: 0, y: ay };
-      return null;
+      const i = kit.input;
+      let x = (i.right ? 1 : 0) - (i.left ? 1 : 0);
+      let y = (i.down ? 1 : 0) - (i.up ? 1 : 0);
+      if (!x && !y) {
+        const sx = i.stickX, sy = i.stickY, ax = Math.abs(sx), ay = Math.abs(sy);
+        if (Math.max(ax, ay) < 0.15) return null;
+        if (Math.min(ax, ay) >= Math.max(ax, ay) * 0.5) { x = Math.sign(sx); y = Math.sign(sy); }
+        else if (ax > ay) x = Math.sign(sx);
+        else y = Math.sign(sy);
+      }
+      return x || y ? { x, y } : null;
     }
     function rockBlocks(x, y) {
       return game.rocks.some((k) => k.state !== "gone" && k.state !== "land" && Math.abs(k.x - x) < T && Math.abs(k.y - y) < T);
@@ -259,19 +262,32 @@
       const p = game.p;
       const offX = (p.x - T / 2) % T, offY = (p.y - T / 2) % T;
       let m = d;
-      // 曲がりたい向きと直角に進んでいて、まだ升目の線に乗っていないとき:
-      // 線を少しだけ（LATE_TURN 以内）通り過ぎていたら戻って線に乗る（押すのが少し遅れても次の線まで行かない）。
-      // それ以上なら今の向きのまま次の線まで進む
-      const along = d.x ? { off: offY, f: p.face.y } : d.y ? { off: offX, f: p.face.x } : null;
-      if (along && along.off !== 0) {
-        const f = along.f || (along.off < T / 2 ? -1 : 1);
-        const passed = f > 0 ? along.off : T - along.off; // 後ろの線からどれだけ進んだか
-        const dir = passed <= LATE_TURN ? -f : f;
-        m = d.x ? { x: 0, y: dir } : { x: dir, y: 0 };
+      if (d.x && d.y) {
+        // 斜め: 升目の交点に来るたびに進む軸を入れ替える（1マスずつのきれいな階段になる）。
+        // 交点の間は、乗っている線に沿って斜めの向きの成分へ進む
+        if (offX === 0 && offY === 0) {
+          m = p.face.x ? { x: 0, y: d.y } : { x: d.x, y: 0 };
+          if (!canStep(m)) m = m.x ? { x: 0, y: d.y } : { x: d.x, y: 0 };
+        } else m = offY === 0 ? { x: d.x, y: 0 } : { x: 0, y: d.y };
+        p.snap = false;
+      } else {
+        // 曲がりたい向きと直角に進んでいて、まだ升目の線に乗っていないとき:
+        // 押した瞬間に線を少しだけ（LATE_TURN 以内）通り過ぎていたら、戻って線に乗る（押すのが少し遅れても次の線まで行かない）。
+        // それ以外は今の向きのまま次の線まで進む
+        const along = d.x ? { off: offY, f: p.face.y } : { off: offX, f: p.face.x };
+        if (along.off === 0) p.snap = false;
+        else {
+          const f = along.f || (along.off < T / 2 ? -1 : 1);
+          const passed = f > 0 ? along.off : T - along.off; // 後ろの線からどれだけ進んだか
+          if (p.freshTurn && passed <= LATE_TURN) p.snap = true;
+          const dir = p.snap ? -f : f;
+          m = d.x ? { x: 0, y: dir } : { x: dir, y: 0 };
+        }
+        p.freshTurn = false;
       }
       if (m !== d && !canStep(m)) m = { x: -m.x, y: -m.y };
       // 戻るときは向きを変えない（絵が一瞬振り返らないように。次の 1px でも同じ判断が続く）
-      const back = m !== d && (m.x === -p.face.x && m.y === -p.face.y);
+      const back = p.snap && m.x === -p.face.x && m.y === -p.face.y;
       if (!back) p.face = m;
       if (!canStep(m)) return false;
       const nx = p.x + m.x, ny = p.y + m.y;
@@ -301,9 +317,13 @@
       }
       p.tool = null;
       const d = wantDir();
-      if (!d) return;
+      // 向きの入力が変わった瞬間だけ「曲がり遅れの戻り」を許す（押しっぱなしで行ったり来たりしないように）
+      const last = p.lastWant;
+      p.lastWant = d;
+      if (!d) { p.snap = false; return; }
+      if (!last || last.x !== d.x || last.y !== d.y) { p.freshTurn = true; p.snap = false; }
       // 前が土なら少し遅い
-      const digging = !isOpen(p.x + d.x * 14, p.y + d.y * 14);
+      const digging = !isOpen(p.x + p.face.x * 14, p.y + p.face.y * 14);
       p.acc += digging ? 1.5 : 2;
       while (p.acc >= 1) {
         p.acc -= 1;
@@ -583,7 +603,7 @@
       lives: { start: 3 },
       controls: {
         stick: true,
-        stickDigital4: true, // 掘り進むので4方向に丸める
+        stickDigital4: false, // 斜めに倒すと階段状に掘れるよう、向きはゲーム側で読む（wantDir）
         buttons: [{ id: "tool", label: "X", ariaLabel: "忍具", keys: ["KeyX", "Space"], primary: true }],
       },
       share: {
