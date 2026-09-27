@@ -47,6 +47,7 @@
     const FY = 76; // 盤面の上端（上は HUD）
     const S = 4, SC = (COLS * T) / S, SR = (ROWS * T) / S;
     const DIG_HALF = 12; // 掘る幅の半分
+    const LATE_TURN = 12; // 曲がるのが遅れても戻って曲がれる幅（px。約1/3マス）
     const TOOL_REACH = 112; // 忍具の届く長さ（3.5マス）
     const BIND_MAX = 4; // この段まで縛ると倒せる
     const START = { c: 15, r: 0 };
@@ -258,10 +259,20 @@
       const p = game.p;
       const offX = (p.x - T / 2) % T, offY = (p.y - T / 2) % T;
       let m = d;
-      if (d.x && offY !== 0) m = p.face.y ? { x: 0, y: p.face.y } : { x: 0, y: offY < T / 2 ? -1 : 1 };
-      else if (d.y && offX !== 0) m = p.face.x ? { x: p.face.x, y: 0 } : { x: offX < T / 2 ? -1 : 1, y: 0 };
+      // 曲がりたい向きと直角に進んでいて、まだ升目の線に乗っていないとき:
+      // 線を少しだけ（LATE_TURN 以内）通り過ぎていたら戻って線に乗る（押すのが少し遅れても次の線まで行かない）。
+      // それ以上なら今の向きのまま次の線まで進む
+      const along = d.x ? { off: offY, f: p.face.y } : d.y ? { off: offX, f: p.face.x } : null;
+      if (along && along.off !== 0) {
+        const f = along.f || (along.off < T / 2 ? -1 : 1);
+        const passed = f > 0 ? along.off : T - along.off; // 後ろの線からどれだけ進んだか
+        const dir = passed <= LATE_TURN ? -f : f;
+        m = d.x ? { x: 0, y: dir } : { x: dir, y: 0 };
+      }
       if (m !== d && !canStep(m)) m = { x: -m.x, y: -m.y };
-      p.face = m;
+      // 戻るときは向きを変えない（絵が一瞬振り返らないように。次の 1px でも同じ判断が続く）
+      const back = m !== d && (m.x === -p.face.x && m.y === -p.face.y);
+      if (!back) p.face = m;
       if (!canStep(m)) return false;
       const nx = p.x + m.x, ny = p.y + m.y;
       p.x = nx;
