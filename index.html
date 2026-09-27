@@ -24,6 +24,7 @@
     <ul>
       <li>地面を掘ると、その跡が通路になります。うっすら見えている CNP を掘り当てると救出</li>
       <li>敵は忍具（長押し）で縛りきって倒すか、真下を掘って岩を落としてつぶします。縛られている敵には触れても平気</li>
+      <li>赤い鬼は、縦か横に並ぶと構えてから手裏剣を投げてきます（3マス飛び、土も抜ける）。構えが見えたら列をずらそう</li>
       <li>その層の CNP をそろえると下への穴が開きます。3層で 11体そろえたら、地上の出口へ</li>
       <li>スマホ: 左半分を押したまま倒して移動（掘る） ・ 右下の X を長押しで忍具</li>
       <li>PC: 矢印 / WASD で移動（掘る） ・ X（長押し）で忍具 ・ P 一時停止 ・ M 音</li>
@@ -51,13 +52,16 @@
 
     // 層ごとの設定。深いほど敵が速く・多く、すぐ土の中を抜けてくる
     const LAYERS = [
-      { name: "城下町の地下", en: "LAYER 1", cnp: [0, 1, 2], enemies: 4, rocks: 4, speed: 0.9, ghostAfter: [720, 1080], kill: 200,
+      { name: "城下町の地下", en: "LAYER 1", cnp: [0, 1, 2], enemies: 4, rocks: 4, speed: 0.9, ghostAfter: [720, 1080], kill: 200, throwers: 1, throwCd: [240, 420],
         bands: [["gold", 0.34], ["gold", 0.27], ["gold", 0.21], ["dim", 0.28]] },
-      { name: "金山の坑道", en: "LAYER 2", cnp: [3, 4, 5, 6], enemies: 5, rocks: 5, speed: 1.1, ghostAfter: [540, 840], kill: 300,
+      { name: "金山の坑道", en: "LAYER 2", cnp: [3, 4, 5, 6], enemies: 5, rocks: 5, speed: 1.1, ghostAfter: [540, 840], kill: 300, throwers: 2, throwCd: [180, 330],
         bands: [["gold", 0.3], ["danger", 0.24], ["gold", 0.2], ["danger", 0.17]] },
-      { name: "天守の地下蔵", en: "LAYER 3", cnp: [7, 8, 9, 10], enemies: 6, rocks: 6, speed: 1.3, ghostAfter: [360, 600], kill: 400,
+      { name: "天守の地下蔵", en: "LAYER 3", cnp: [7, 8, 9, 10], enemies: 6, rocks: 6, speed: 1.3, ghostAfter: [360, 600], kill: 400, throwers: 3, throwCd: [120, 240],
         bands: [["magenta", 0.2], ["danger", 0.2], ["magenta", 0.15], ["dim", 0.22]] },
     ];
+
+    // 手裏剣: 赤い鬼だけが投げる。縦か横に並ぶと少し構えてから投げ、3マス飛ぶ（土も抜ける）
+    const SHURIKEN = { reach: T * 3, speed: 3.5, windup: 30, sight: T * 4.5 };
 
     const PTS = { dig: 10, cnp: 300, crush: [0, 500, 1500, 3000], allCnp: 5000, perLife: 1000 };
 
@@ -69,7 +73,7 @@
     const tctx = terrain.getContext("2d");
 
     const game = {
-      layer: 0, state: "intro", t: 0, p: null, enemies: [], rocks: [], cnps: [], exit: null, pops: [], bonus: null,
+      layer: 0, state: "intro", t: 0, p: null, enemies: [], shots: [], rocks: [], cnps: [], exit: null, pops: [], bonus: null,
     };
 
     const rnd = (a, b) => a + Math.random() * (b - a);
@@ -169,7 +173,7 @@
             carve((cx(a) + cx(a2)) / 2, (cy(b) + cy(b2)) / 2);
           }
           const [hc, hr] = cells[rint(0, len - 1)];
-          game.enemies.push(newEnemy(hc, hr, L));
+          game.enemies.push(newEnemy(hc, hr, L, game.enemies.length < L.throwers ? 1 : 0));
           break;
         }
       }
@@ -204,21 +208,23 @@
       }
       game.exit = null;
       game.pops = [];
+      game.shots = [];
       game.p = newPlayer();
     }
 
     function newPlayer() {
       return { x: cx(START.c), y: cy(START.r), face: { x: 1, y: 0 }, acc: 0, inv: 90, state: "alive", t: 0, tool: null, walk: 0 };
     }
-    function newEnemy(c, r, L) {
+    function newEnemy(c, r, L, kind) {
       return {
         home: { c, r }, x: cx(c), y: cy(r), dir: DIRS[rint(0, 3)], acc: 0, speed: L.speed * rnd(0.9, 1.1),
-        mode: "walk", ghostT: rint(...L.ghostAfter), ghostMin: 0, bind: 0, alive: true, crushed: null, kind: Math.random() < 0.5 ? 0 : 1,
+        mode: "walk", ghostT: rint(...L.ghostAfter), ghostMin: 0, bind: 0, alive: true, crushed: null, kind,
+        throwCd: rint(...L.throwCd), windup: 0,
       };
     }
     function resetEnemy(e) {
       const L = LAYERS[game.layer];
-      Object.assign(e, { x: cx(e.home.c), y: cy(e.home.r), mode: "walk", ghostT: rint(...L.ghostAfter), bind: 0, acc: 0 });
+      Object.assign(e, { x: cx(e.home.c), y: cy(e.home.r), mode: "walk", ghostT: rint(...L.ghostAfter), bind: 0, acc: 0, windup: 0, throwCd: rint(...L.throwCd) });
     }
 
     // ===== 咲耶 =====
@@ -339,8 +345,10 @@
       const held = p.tool && p.tool.target === e && !p.tool.done;
       if (e.bind > 0) {
         if (!held) e.bind = Math.max(0, e.bind - 1 / 50);
+        e.windup = 0;
         return;
       }
+      if (e.kind === 1 && e.mode === "walk" && updateThrow(e)) return;
       if (e.mode === "ghost") {
         // 土の中を抜けて咲耶のほうへ（目だけの姿）
         e.ghostMin--;
@@ -373,6 +381,45 @@
         e.x += e.dir.x;
         e.y += e.dir.y;
       }
+    }
+    // 構えている間は止まる。構え終わったら咲耶のいる向きへ投げる。投げたら true を返す間は動かない
+    function updateThrow(e) {
+      const p = game.p;
+      if (e.windup > 0) {
+        if (--e.windup === 0) {
+          game.shots.push({ x: e.x, y: e.y, dx: e.aim.x, dy: e.aim.y, left: SHURIKEN.reach, spin: 0 });
+          e.throwCd = rint(...LAYERS[game.layer].throwCd);
+          kit.sfx.tone({ freq: 1400, to: 700, dur: 0.12, type: "triangle", gain: 0.12 });
+        }
+        return true;
+      }
+      if (e.throwCd > 0) { e.throwCd--; return false; }
+      if (p.state !== "alive" || (e.x - T / 2) % T !== 0 || (e.y - T / 2) % T !== 0) return false;
+      const dx = p.x - e.x, dy = p.y - e.y;
+      let aim = null;
+      if (Math.abs(dy) < 10 && Math.abs(dx) < SHURIKEN.sight) aim = { x: Math.sign(dx), y: 0 };
+      else if (Math.abs(dx) < 10 && Math.abs(dy) < SHURIKEN.sight) aim = { x: 0, y: Math.sign(dy) };
+      if (!aim || (!aim.x && !aim.y)) return false;
+      e.aim = aim;
+      e.dir = aim;
+      e.windup = SHURIKEN.windup;
+      return true;
+    }
+    function updateShots() {
+      const p = game.p;
+      for (const s of game.shots) {
+        const step = Math.min(SHURIKEN.speed, s.left);
+        s.x += s.dx * step;
+        s.y += s.dy * step;
+        s.left -= step;
+        s.spin += 0.4;
+        if (game.rocks.some((k) => (k.state === "idle" || k.state === "wobble") && Math.abs(k.x - s.x) < 14 && Math.abs(k.y - s.y) < 14)) s.left = 0;
+        if (p.state === "alive" && p.inv === 0 && Math.hypot(p.x - s.x, p.y - s.y) < 13) {
+          s.left = 0;
+          killPlayer();
+        }
+      }
+      game.shots = game.shots.filter((s) => s.left > 0);
     }
     function chooseDir(e) {
       const c = (e.x - T / 2) / T, r = (e.y - T / 2) / T;
@@ -447,6 +494,7 @@
         return;
       }
       game.p = newPlayer();
+      game.shots = [];
       for (const e of game.enemies) if (e.alive && !e.crushed) resetEnemy(e);
     }
     function checkCnp() {
@@ -548,6 +596,7 @@
           checkCnp();
         }
         for (const e of game.enemies) updateEnemy(e);
+        updateShots();
         for (const k of game.rocks) updateRock(k);
         game.rocks = game.rocks.filter((k) => k.state !== "gone");
         for (const pp of game.pops) pp.t--;
@@ -691,6 +740,8 @@
       }
       // 敵
       for (const e of game.enemies) if (e.alive) drawEnemy(ctx, k, e);
+      // 手裏剣
+      for (const s of game.shots) drawShuriken(ctx, k, s);
       // 咲耶
       drawPlayer(ctx, k);
       // 点数の吹き出し
@@ -773,9 +824,26 @@
       ctx.fillRect(p.x + 2 + f.x * 3, p.y - 5 + f.y * 3, 2, 3);
     }
 
+    function drawShuriken(ctx, k, s) {
+      ctx.save();
+      ctx.translate(s.x, s.y);
+      ctx.rotate(s.spin);
+      ctx.fillStyle = k.retro.colors.ink;
+      ctx.beginPath();
+      for (let i = 0; i < 8; i++) {
+        const r = i % 2 ? 2.5 : 8;
+        const a = (i * Math.PI) / 4;
+        ctx[i ? "lineTo" : "moveTo"](Math.cos(a) * r, Math.sin(a) * r);
+      }
+      ctx.closePath();
+      ctx.fill();
+      ctx.fillStyle = k.retro.colors.bg;
+      ctx.fillRect(-1, -1, 2, 2);
+      ctx.restore();
+    }
     function drawEnemy(ctx, k, e) {
       const { colors } = k.retro;
-      const body = e.kind ? colors.danger : colors.magenta;
+      const body = e.windup > 0 && k.frame % 6 < 3 ? colors.ink : e.kind ? colors.danger : colors.magenta;
       if (e.mode === "ghost") {
         // 土の中では目だけ
         ctx.fillStyle = colors.ink;
