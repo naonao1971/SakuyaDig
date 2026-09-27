@@ -24,7 +24,8 @@
     <summary>遊び方</summary>
     <ul>
       <li>城下町の地下を掘り進め、埋まった CNP 11体を掘り出して地上へ戻る</li>
-      <li>スマホ: 左半分を押したまま倒して掘り進む ・ 右下のボタンを長押しで忍具</li>
+      <li>スマホ: 左半分を押したまま倒して掘り進む ・ 右下のボタンを長押しで忍具（縛りきると倒せる）</li>
+      <li>真下を掘った岩は揺れてから落ちる。鬼をまとめてつぶすと高得点、自分に当たるとミス</li>
       <li>PC: 矢印 / WASD で掘り進む ・ X 長押しで忍具 ・ P 一時停止 ・ M 音</li>
       <li>姉妹作: <a href="https://sakuya.naoblock.jp/">咲耶スクランブル</a> / <a href="https://rally.naoblock.jp/">咲耶Nounラリー</a> / <a href="https://jumpbug.naoblock.jp/">咲耶ジャンプバグ</a></li>
     </ul>
@@ -35,168 +36,517 @@
     // kit.css と同じ番号にそろえ、CHANGELOG を読んでから実機で確かめる
     import { createKit } from "https://cdn.jsdelivr.net/gh/naonao1971/sakuya-kit@0.2.0/kit.js";
 
-    // ===== ここから下がタイトル固有の中身（いまは kit の動作見本。企画書に合わせて置き換える） =====
-    // 見本: 30秒のあいだ浮遊するCNPを集めて、岩を撃ち落とす。燃料が尽きるか残機が無くなると終わり。
-    // スコア・残機・CNPの回収・HUD・自動連射は kit の部品を使っている。
-    const W = 960, H = 540;
-    const DURATION = 30 * 60;
-    const game = { ship: null, items: [], rocks: [], shots: [], timer: 0, fuel: 100, dash: 0 };
+    // ===== ここから下がタイトル固有の中身 =====
+    // 咲耶ディグ（プロト）: 4方向に土を掘り、トンネルを追ってくる鬼を忍具で縛るか岩でつぶす。
+    // 各層に埋まった CNP を全員掘り出すと地上に鳥居が開き、くぐると次の層へ。3層でクリア。
+    const W = 960, H = 540, T = 30, COLS = 32, ROWS = 18, SURF = 3;
+    const P_SPEED = 2.5;
+    const ROPE_MAX = 3 * T;
+    const BIND_MAX = 60; // 縛りきるまでのフレーム（X 長押し 1 秒）
+    const LAYERS = [
+      { name: "STAGE 1  CASTLE TOWN", cnp: [0, 1, 2], enemies: 3, speed: 1.0, rocks: 5, kill: 200,
+        dirt: ["#7a5433", "#664429", "#523620"] },
+      { name: "STAGE 2  GOLD MINE", cnp: [3, 4, 5, 6], enemies: 5, speed: 1.25, rocks: 6, kill: 300,
+        dirt: ["#6e5c2c", "#5c4c24", "#4a3c1c"] },
+      { name: "STAGE 3  CASTLE VAULT", cnp: [7, 8, 9, 10], enemies: 7, speed: 1.5, rocks: 7, kill: 400,
+        dirt: ["#5a3448", "#4a2a3b", "#3a202e"] },
+    ];
+    const DIRS = [{ x: 1, y: 0 }, { x: -1, y: 0 }, { x: 0, y: 1 }, { x: 0, y: -1 }];
 
-    function newShip() {
-      const cp = kit.checkpoint.value || { x: 120, y: H / 2 };
-      return { x: cp.x, y: cp.y, vx: 0, vy: 0, r: 12, inv: 90 };
+    const game = {
+      layer: 0, grid: [], rocks: [], enemies: [], buried: [], player: null, rope: null,
+      exit: null, intro: 0, dying: 0, fx: [],
+    };
+
+    const cx = (c) => c * T + T / 2;
+    const cy = (r) => r * T + T / 2;
+    const inField = (c, r) => c >= 0 && c < COLS && r >= SURF && r < ROWS;
+    const isDirt = (c, r) => inField(c, r) && game.grid[r][c] === 1;
+    const rockAt = (c, r) => game.rocks.find((k) => k.state !== "fall" && k.state !== "break" && k.c === c && k.r === r);
+    const passable = (c, r) => inField(c, r) && !isDirt(c, r) && !rockAt(c, r);
+    const rand = (a, b) => a + Math.floor(Math.random() * (b - a + 1));
+
+    function buildLayer(k) {
+      const L = LAYERS[game.layer];
+      game.grid = [];
+      for (let r = 0; r < ROWS; r++) game.grid.push(new Array(COLS).fill(r > SURF ? 1 : 0));
+      const used = new Set();
+      const key = (c, r) => `${c},${r}`;
+      // 出発地点の真下は少しだけ空けておく
+      const startC = COLS / 2;
+      for (let r = SURF + 1; r <= SURF + 2; r++) { game.grid[r][startC] = 0; used.add(key(startC, r)); }
+
+      // 鬼の巣（横または縦に 3 マスの空洞）
+      game.enemies = [];
+      let guard = 0;
+      while (game.enemies.length < L.enemies && guard++ < 500) {
+        const horiz = Math.random() < 0.6;
+        const c = rand(1, COLS - 4), r = rand(SURF + 3, ROWS - 4);
+        const cells = [0, 1, 2].map((i) => (horiz ? [c + i, r] : [c, r + i]));
+        if (Math.abs(c - startC) < 4 && r < SURF + 6) continue;
+        if (cells.some(([a, b]) => [-1, 0, 1].some((d) => used.has(key(a + d, b)) || used.has(key(a, b + d))))) continue;
+        cells.forEach(([a, b]) => { game.grid[b][a] = 0; used.add(key(a, b)); });
+        const [ec, er] = cells[1];
+        game.enemies.push({ home: [ec, er], ...newEnemy(ec, er, L.speed) });
+      }
+
+      // 埋まっている CNP（横に散らす）
+      game.buried = [];
+      const n = L.cnp.length;
+      L.cnp.forEach((idx, i) => {
+        for (let t = 0; t < 200; t++) {
+          const c = rand(Math.floor((i * COLS) / n) + 1, Math.floor(((i + 1) * COLS) / n) - 2);
+          const r = rand(SURF + 3, ROWS - 1);
+          if (used.has(key(c, r)) || !isDirt(c, r)) continue;
+          used.add(key(c, r));
+          game.buried.push({ c, r, ch: k.cnp.chars[idx], found: false });
+          break;
+        }
+      });
+
+      // 岩（真下が土の場所）
+      game.rocks = [];
+      guard = 0;
+      while (game.rocks.length < L.rocks && guard++ < 500) {
+        const c = rand(1, COLS - 2), r = rand(SURF + 2, ROWS - 3);
+        if (used.has(key(c, r)) || used.has(key(c, r + 1)) || !isDirt(c, r + 1) || Math.abs(c - startC) < 2) continue;
+        used.add(key(c, r));
+        game.rocks.push({ c, r, x: cx(c), y: cy(r), state: "idle", t: 0, vy: 0, kills: 0 });
+      }
+      game.exit = null;
+      game.rope = null;
+      game.player = newPlayer();
+      game.intro = 110;
     }
-    function reset() {
-      game.items.length = 0;
-      game.rocks.length = 0;
-      game.shots.length = 0;
-      game.timer = 0;
-      game.fuel = 100;
-      game.dash = 0;
-      game.ship = newShip();
+
+    function newPlayer() {
+      const c = COLS / 2, r = SURF;
+      return { c, r, x: cx(c), y: cy(r), tc: null, tr: null, face: { x: 0, y: 1 }, inv: 90, step: 0 };
+    }
+    function newEnemy(c, r, speed) {
+      return { c, r, x: cx(c), y: cy(r), tc: null, tr: null, dir: null, speed, bound: 0, ghost: false,
+        gt: rand(360, 720), ghostFor: 0, dead: false };
+    }
+
+    function dig(k, c, r) {
+      if (!isDirt(c, r)) return;
+      game.grid[r][c] = 0;
+      k.score.add(10);
+      const b = game.buried.find((b) => !b.found && b.c === c && b.r === r);
+      if (b) {
+        b.found = true;
+        k.score.add(k.cnp.run.collect(b.ch.no) ? 300 : 100);
+        k.sfx.pickup();
+        game.fx.push({ text: "+300", x: cx(c), y: cy(r), t: 50 });
+        if (game.buried.every((b) => b.found)) openExit(k);
+      }
+      // 支えを失った岩は揺れはじめる
+      const rock = rockAt(c, r - 1);
+      if (rock && rock.state === "idle") { rock.state = "wobble"; rock.t = 45; }
+    }
+
+    function openExit(k) {
+      const c = game.player.c < COLS / 2 ? COLS - 2 : 1;
+      game.exit = { c, r: SURF };
+      k.sfx.bonus();
+    }
+
+    function moveToward(e, speed) {
+      const tx = cx(e.tc), ty = cy(e.tr);
+      const dx = tx - e.x, dy = ty - e.y, d = Math.hypot(dx, dy);
+      if (d <= speed) { e.x = tx; e.y = ty; e.c = e.tc; e.r = e.tr; e.tc = e.tr = null; return true; }
+      e.x += (dx / d) * speed;
+      e.y += (dy / d) * speed;
+      return false;
+    }
+
+    function updatePlayer(k) {
+      const p = game.player;
+      if (p.inv > 0) p.inv--;
+      const a = k.input.axis();
+      let want = null;
+      if (Math.abs(a.x) > 0.4 && Math.abs(a.x) >= Math.abs(a.y)) want = { x: Math.sign(a.x), y: 0 };
+      else if (Math.abs(a.y) > 0.4) want = { x: 0, y: Math.sign(a.y) };
+
+      if (game.rope) return; // 忍具を出している間は動けない
+
+      if (p.tc !== null) {
+        // 移動中でも真逆には折り返せる
+        // 移動中の p.c / p.r は出発したマスなので、行き先と入れ替えれば引き返せる
+        if (want && want.x === -p.face.x && want.y === -p.face.y) {
+          [p.c, p.tc] = [p.tc, p.c];
+          [p.r, p.tr] = [p.tr, p.r];
+          p.face = want;
+        }
+      }
+      if (p.tc === null && want) {
+        p.face = want;
+        const nc = p.c + want.x, nr = p.r + want.y;
+        if (inField(nc, nr) && !rockAt(nc, nr)) { p.tc = nc; p.tr = nr; }
+      }
+      if (p.tc !== null) {
+        const tc = p.tc, tr = p.tr;
+        const half = Math.hypot(cx(tc) - p.x, cy(tr) - p.y) <= T / 2;
+        if (half && isDirt(tc, tr)) dig(k, tc, tr);
+        moveToward(p, P_SPEED);
+        p.step++;
+      }
+      if (game.exit && p.tc === null && p.c === game.exit.c && p.r === game.exit.r) nextLayer(k);
+    }
+
+    function updateRope(k) {
+      const p = game.player;
+      const hold = k.input.buttons.tool;
+      if (!game.rope) {
+        if (hold && p.tc === null) game.rope = { len: 0, dir: { ...p.face }, hit: null, miss: 0 };
+        return;
+      }
+      const R = game.rope;
+      if (R.hit) {
+        if (!hold || R.hit.dead) { game.rope = null; return; }
+        R.hit.bound = Math.min(BIND_MAX, R.hit.bound + 1);
+        if (k.frame % 12 === 0) k.sfx.shot();
+        if (R.hit.bound >= BIND_MAX) {
+          R.hit.dead = true;
+          const pts = LAYERS[game.layer].kill;
+          k.score.add(pts);
+          k.sfx.explode();
+          game.fx.push({ text: `+${pts}`, x: R.hit.x, y: R.hit.y, t: 50 });
+          game.rope = null;
+        }
+        return;
+      }
+      if (R.miss > 0) { if (--R.miss === 0) game.rope = null; return; }
+      if (!hold) { game.rope = null; return; }
+      const next = R.len + 9;
+      const tx = p.x + R.dir.x * next, ty = p.y + R.dir.y * next;
+      const tc = Math.floor(tx / T), tr = Math.floor(ty / T);
+      if (next > ROPE_MAX || !passable(tc, tr) && !(tc === p.c && tr === p.r)) { R.miss = 10; return; }
+      R.len = next;
+      const e = game.enemies.find((e) => !e.dead && !e.ghost && Math.hypot(e.x - tx, e.y - ty) < 16);
+      if (e) { R.hit = e; e.bound = Math.max(e.bound, 1); k.sfx.hit(); }
+    }
+
+    function updateEnemies(k) {
+      const p = game.player;
+      for (const e of game.enemies) {
+        if (e.dead) continue;
+        if (e.bound > 0) {
+          if (!(game.rope && game.rope.hit === e)) e.bound = Math.max(0, e.bound - 0.5);
+          continue;
+        }
+        if (e.ghost) {
+          // 目玉だけになって土をすり抜け、咲耶に向かう。しばらくしたら近くのトンネルで実体に戻る
+          e.ghostFor++;
+          const dx = p.x - e.x, dy = p.y - e.y, d = Math.hypot(dx, dy) || 1;
+          e.x += (dx / d) * e.speed * 0.7;
+          e.y += (dy / d) * e.speed * 0.7;
+          const c = Math.round((e.x - T / 2) / T), r = Math.round((e.y - T / 2) / T);
+          if (e.ghostFor > 120 && passable(c, r) && Math.hypot(cx(c) - e.x, cy(r) - e.y) < 3) {
+            Object.assign(e, { c, r, x: cx(c), y: cy(r), ghost: false, gt: rand(420, 780), tc: null, tr: null, dir: null });
+          }
+          continue;
+        }
+        if (e.tc === null) {
+          if (--e.gt <= 0) { e.ghost = true; e.ghostFor = 0; continue; }
+          const opts = DIRS.filter((d) => passable(e.c + d.x, e.r + d.y));
+          let choices = opts.filter((d) => !(e.dir && d.x === -e.dir.x && d.y === -e.dir.y));
+          if (!choices.length) choices = opts;
+          if (!choices.length) continue;
+          let d;
+          if (Math.random() < 0.6) {
+            d = choices.reduce((best, o) => {
+              const dist = Math.abs(e.c + o.x - p.c) + Math.abs(e.r + o.y - p.r);
+              return !best || dist < best.dist ? { ...o, dist } : best;
+            }, null);
+          } else d = choices[rand(0, choices.length - 1)];
+          e.dir = { x: d.x, y: d.y };
+          e.tc = e.c + d.x; e.tr = e.r + d.y;
+        }
+        // 岩が行き先に落ちてきた等で通れなくなったら引き返す
+        if (e.tc !== null && !passable(e.tc, e.tr)) { e.tc = e.c; e.tr = e.r; }
+        moveToward(e, e.speed);
+      }
+      if (p.inv === 0) {
+        const hit = game.enemies.find((e) => !e.dead && !e.ghost && e.bound === 0 && Math.hypot(e.x - p.x, e.y - p.y) < 22);
+        if (hit) miss(k);
+      }
+    }
+
+    function updateRocks(k) {
+      const p = game.player;
+      for (const rock of game.rocks) {
+        if (rock.state === "idle" && !isDirt(rock.c, rock.r + 1) && !rockAt(rock.c, rock.r + 1) && rock.r + 1 < ROWS) {
+          rock.state = "wobble"; rock.t = 45;
+        }
+        if (rock.state === "wobble") {
+          // 咲耶が真下にいる間は落ちない（ディグダグと同じ）
+          const under = p.c === rock.c && p.r === rock.r + 1 && p.tc === null;
+          if (--rock.t <= 0 && !under) { rock.state = "fall"; rock.vy = 0; k.sfx.hit(); }
+        } else if (rock.state === "fall") {
+          rock.vy = Math.min(6, rock.vy + 0.4);
+          rock.y += rock.vy;
+          const r = Math.floor(rock.y / T);
+          if (r + 1 >= ROWS || isDirt(rock.c, r + 1) || rockAt(rock.c, r + 1)) {
+            if (rock.y >= cy(r)) {
+              rock.y = cy(r); rock.r = r; rock.state = "break"; rock.t = 30;
+              if (rock.kills > 0) {
+                const pts = rock.kills === 1 ? 500 : rock.kills === 2 ? 1500 : 3000;
+                k.score.add(pts);
+                k.sfx.bonus();
+                game.fx.push({ text: `+${pts}`, x: rock.x, y: rock.y - 20, t: 60 });
+              } else k.sfx.explode();
+            }
+          }
+          for (const e of game.enemies) {
+            if (!e.dead && !e.ghost && Math.abs(e.x - rock.x) < 20 && Math.abs(e.y - rock.y) < 22) {
+              e.dead = true; e.crushed = true; rock.kills++;
+              if (game.rope && game.rope.hit === e) game.rope = null;
+            }
+          }
+          if (p.inv === 0 && Math.abs(p.x - rock.x) < 20 && Math.abs(p.y - rock.y) < 22) miss(k);
+        } else if (rock.state === "break") {
+          rock.t--;
+        }
+      }
+      game.rocks = game.rocks.filter((r) => !(r.state === "break" && r.t <= 0));
+    }
+
+    function miss(k) {
+      if (game.dying) return;
+      k.sfx.hit();
+      game.dying = 70;
+      game.rope = null;
+    }
+    function afterMiss(k) {
+      if (k.lives.lose() <= 0) return end(false);
+      game.player = newPlayer();
+      for (const e of game.enemies) {
+        if (e.dead) continue;
+        const [c, r] = e.home;
+        Object.assign(e, newEnemy(c, r, e.speed), { home: e.home });
+      }
+    }
+
+    function nextLayer(k) {
+      k.sfx.bonus();
+      if (game.layer === LAYERS.length - 1) {
+        k.score.add(5000 + k.lives.value * 1000);
+        return end(true);
+      }
+      game.layer++;
+      buildLayer(k);
     }
 
     const kit = createKit({
       gameId: "dig" /* 企画書の gameId。あとから変えない */,
       title: "SAKUYA DIG",
       subtitle: "- DIG OUT 11 CNP -",
-      // 咲耶シリーズ共通のランキング（sakuya-kit/gas/apps-script.gs）。新しい GAS は作らない
-      gasUrl: "https://script.google.com/macros/s/AKfycby-UoKAfHw4eBULVb37tQzwPEhNm65B_HUktd9Sh0ZxMdOdmnRHdub0NeeXUCAqg8bG/exec",
+      // プロトの間はランキングに送らない（試し遊びの点数が本番の共通ランキングに載らないように）。
+      // 公開するときに共通 GAS の URL に戻す:
+      // https://script.google.com/macros/s/AKfycby-UoKAfHw4eBULVb37tQzwPEhNm65B_HUktd9Sh0ZxMdOdmnRHdub0NeeXUCAqg8bG/exec
+      gasUrl: "",
       maxScore: 50000, // これを超える記録は登録させない（GAS の _games のスコア上限と同じ値にする）
       cnp: true,
       lives: { start: 3 },
       controls: {
         stick: true,
         stickDigital4: true, // 4方向に丸める（掘るゲームなので上下左右だけ）
-        // 傾き操作を使うタイトルだけ有効にする（既定は使わない）
-        //   gyro: true                        … スタート時に自動で傾き操作へ（咲耶スクランブル方式）
-        //   gyro: { autoStart: false }        … 最初はスティック。📱 を長押しした人だけ傾き操作へ
-        //   gyro: { sensitivity: 0.55, deadzoneDeg: 4, maxDeg: 28 } … 効き具合の調整
         gyro: false,
         buttons: [
-          { id: "dash", label: "X", ariaLabel: "ダッシュ", keys: ["KeyX", "Space"], primary: true,
-            onPress: () => { game.dash = 20; kit.sfx.shot(); } },
+          { id: "tool", label: "X", ariaLabel: "忍具", keys: ["KeyX"], primary: true, onPress: () => {} },
         ],
-        // 自動連射（V キー／🔫 の長押しで切り替え。タッチ端末は最初からオン）
-        //   button: "dash" にすると、X を短くタップで切り替える方式（咲耶ジャンプバグ方式）になる
-        autoFire: { interval: 12, onFire: () => fire() },
       },
       share: {
         when: "clear",
-        text: (r) => `SAKUYA NEW GAME をクリア！\nスコア ${r.score}\n救出 ${r.rescued.length}/11`,
+        text: (r) => `咲耶ディグ（試作）をクリア！\nスコア ${r.score}\n救出 ${r.rescued.length}/11`,
       },
-      help: { pc: "矢印/WASDで移動、Xでダッシュ、Vで自動連射、Mで音（Pキーで一時停止）" },
-      // CLEAR / GAME OVER の演出動画（パスはタイトル側の置き場所）。無ければ省略してよく、
-      // そのときはジングルと文字だけの結果画面になる。image は動画を流し終えた後の静止画
-      cutscenes: {
-        // clear: { src: "clear.mp4", image: "clear.png" },
-        // gameOver: { src: "gameover.mp4" },
-      },
+      help: { pc: "矢印/WASDで掘る、X長押しで忍具（縛りきると倒せる）、Mで音（Pキーで一時停止）" },
+      cutscenes: {},
 
-      onStart: reset,
-      onExtend: () => kit.sfx.bonus(),
+      onStart(k) {
+        game.layer = 0;
+        game.dying = 0;
+        game.fx.length = 0;
+        buildLayer(k || kit);
+      },
 
       update(k) {
-        const s = game.ship;
-        const a = k.input.axis();
-        const thrust = game.dash > 0 ? 0.9 : 0.4;
-        if (game.dash > 0) game.dash--;
-        s.vx = (s.vx + a.x * thrust) * 0.9;
-        s.vy = (s.vy + a.y * thrust) * 0.9;
-        s.x = Math.max(s.r, Math.min(W - s.r, s.x + s.vx));
-        s.y = Math.max(s.r, Math.min(H - s.r, s.y + s.vy));
-        if (s.inv > 0) s.inv--;
-        game.fuel = Math.max(0, game.fuel - 0.03);
-
-        if (Math.random() < 0.02) {
-          const ch = k.cnp.run.pick(); // まだ取っていないキャラほど出やすい
-          game.items.push({ ch, x: W + 30, y: 60 + Math.random() * (H - 120), t: Math.random() * 6 });
+        for (const f of game.fx) { f.t--; f.y -= 0.5; }
+        game.fx = game.fx.filter((f) => f.t > 0);
+        if (game.dying > 0) {
+          if (--game.dying === 0) afterMiss(k);
+          return;
         }
-        if (Math.random() < 0.025) {
-          game.rocks.push({ x: W + 20, y: 70 + Math.random() * (H - 70), r: 12 + Math.random() * 16, v: 2 + Math.random() * 3 });
-        }
-        for (const it of game.items) { it.x -= 2; it.t += 0.05; }
-        for (const r of game.rocks) r.x -= r.v;
-        for (const b of game.shots) b.x += 9;
-
-        game.items = game.items.filter((it) => {
-          const y = it.y + Math.sin(it.t) * 12;
-          if (Math.hypot(it.x - s.x, y - s.y) < 30) {
-            k.score.add(k.cnp.run.collect(it.ch.no) ? 300 : 100);
-            game.fuel = Math.min(100, game.fuel + 10);
-            k.sfx.pickup();
-            return false;
-          }
-          return it.x > -40;
-        });
-        game.rocks = game.rocks.filter((r) => {
-          const hit = game.shots.find((b) => Math.hypot(b.x - r.x, b.y - r.y) < r.r + 4);
-          if (hit) { hit.x = W + 99; k.score.add(50); k.sfx.explode(); return false; }
-          if (s.inv === 0 && Math.hypot(r.x - s.x, r.y - s.y) < r.r + s.r) {
-            k.sfx.hit();
-            k.checkpoint.set({ x: 120, y: s.y }); // 例: 復活地点をやられた高さにする
-            if (k.lives.lose() > 0) game.ship = newShip();
-            else return end(false), false;
-          }
-          return r.x > -40;
-        });
-        game.shots = game.shots.filter((b) => b.x < W + 20);
-
-        game.timer++;
-        if (game.fuel <= 0) end(false);
-        else if (game.timer >= DURATION) {
-          k.score.add(k.lives.value * 500 + Math.floor(game.fuel) * 10);
-          end(true);
-        }
+        if (game.intro > 0) { game.intro--; return; }
+        updateRope(k);
+        updatePlayer(k);
+        updateEnemies(k);
+        updateRocks(k);
       },
 
       render(ctx, k) {
         const { colors } = k.retro;
         ctx.fillStyle = colors.bg;
         ctx.fillRect(0, 0, W, H);
-        k.retro.crt();
 
         if (k.phase === "title") {
-          k.retro.titleText("SAKUYA NEW GAME", "- CATCH THE CNP -");
-          k.cnp.chars.forEach((ch, i) => k.cnp.draw(ctx, ch, 130 + i * 70, H / 2, 56));
+          k.retro.crt();
+          k.retro.titleText("SAKUYA DIG", "- DIG OUT 11 CNP -");
+          k.cnp.chars.forEach((ch, i) => k.cnp.draw(ctx, ch, 130 + i * 70, H / 2 + 20, 48));
           return;
         }
+        const L = LAYERS[game.layer];
 
-        for (const it of game.items) k.cnp.draw(ctx, it.ch, it.x, it.y + Math.sin(it.t) * 12, 48);
-        ctx.fillStyle = k.retro.alpha(colors.ink, 0.35);
-        for (const r of game.rocks) { ctx.beginPath(); ctx.arc(r.x, r.y, r.r, 0, Math.PI * 2); ctx.fill(); }
-        ctx.fillStyle = colors.gold;
-        for (const b of game.shots) ctx.fillRect(b.x - 6, b.y - 1, 12, 3);
+        // 空と地上
+        ctx.fillStyle = colors.panel;
+        ctx.fillRect(0, 0, W, (SURF + 1) * T);
+        ctx.fillStyle = "#3b7a3b";
+        ctx.fillRect(0, (SURF + 1) * T - 4, W, 4);
+        // 土（深さで3段の色）と掘った穴
+        for (let r = SURF + 1; r < ROWS; r++) {
+          const band = Math.min(2, Math.floor(((r - SURF - 1) * 3) / (ROWS - SURF - 1)));
+          for (let c = 0; c < COLS; c++) {
+            ctx.fillStyle = game.grid[r][c] === 1 ? L.dirt[band] : colors.bg;
+            ctx.fillRect(c * T, r * T, T, T);
+          }
+        }
+        k.retro.crt();
 
-        const s = game.ship;
-        if (s && !(s.inv > 0 && k.frame % 8 < 4)) {
-          ctx.fillStyle = colors.magenta;
-          ctx.beginPath();
-          ctx.moveTo(s.x + 16, s.y);
-          ctx.lineTo(s.x - 12, s.y - 10);
-          ctx.lineTo(s.x - 12, s.y + 10);
-          ctx.fill();
+        // 埋まっている CNP はうっすら見せる
+        for (const b of game.buried) {
+          if (b.found) continue;
+          ctx.globalAlpha = 0.45 + 0.15 * Math.sin(k.frame / 15);
+          k.cnp.draw(ctx, b.ch, cx(b.c), cy(b.r), 26);
+          ctx.globalAlpha = 1;
         }
 
-        // HUD は kit の共通部品（全タイトル同じ位置・同じ見た目）
+        // 出口の鳥居
+        if (game.exit) {
+          const x = cx(game.exit.c), y = cy(game.exit.r);
+          ctx.fillStyle = k.frame % 30 < 20 ? colors.danger : colors.gold;
+          ctx.fillRect(x - 13, y - 14, 26, 4);
+          ctx.fillRect(x - 10, y - 8, 20, 3);
+          ctx.fillRect(x - 9, y - 12, 3, 27);
+          ctx.fillRect(x + 6, y - 12, 3, 27);
+        }
+
+        // 岩
+        for (const rock of game.rocks) {
+          const wob = rock.state === "wobble" ? Math.sin(k.frame * 1.2) * 2 : 0;
+          if (rock.state === "break") {
+            ctx.fillStyle = k.retro.alpha(colors.ink, rock.t / 40);
+            for (let i = 0; i < 4; i++) ctx.fillRect(rock.x - 12 + i * 7, rock.y + 4 - (30 - rock.t) * 0.3 * (i % 2), 5, 5);
+            continue;
+          }
+          ctx.fillStyle = "#9a9aa8";
+          ctx.beginPath();
+          ctx.arc(rock.x + wob, rock.y, 13, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.fillStyle = "#6c6c7a";
+          ctx.fillRect(rock.x + wob - 6, rock.y - 3, 5, 4);
+          ctx.fillRect(rock.x + wob + 3, rock.y + 3, 4, 3);
+        }
+
+        // 鬼
+        for (const e of game.enemies) {
+          if (e.dead) continue;
+          if (e.ghost) {
+            ctx.globalAlpha = 0.6 + 0.3 * Math.sin(k.frame / 5);
+            for (const s of [-5, 5]) {
+              ctx.fillStyle = "#fff";
+              ctx.beginPath(); ctx.arc(e.x + s, e.y, 4, 0, Math.PI * 2); ctx.fill();
+              ctx.fillStyle = "#000";
+              ctx.fillRect(e.x + s - 1, e.y - 1, 2, 2);
+            }
+            ctx.globalAlpha = 1;
+            continue;
+          }
+          const sc = 1 + (e.bound / BIND_MAX) * 0.7;
+          const rr = 12 * sc;
+          ctx.fillStyle = colors.danger;
+          ctx.beginPath(); ctx.arc(e.x, e.y, rr, 0, Math.PI * 2); ctx.fill();
+          ctx.fillStyle = colors.gold;
+          for (const s of [-1, 1]) {
+            ctx.beginPath();
+            ctx.moveTo(e.x + s * rr * 0.35, e.y - rr * 0.7);
+            ctx.lineTo(e.x + s * rr * 0.75, e.y - rr * 1.35);
+            ctx.lineTo(e.x + s * rr * 0.75, e.y - rr * 0.55);
+            ctx.fill();
+          }
+          ctx.fillStyle = "#fff";
+          ctx.fillRect(e.x - 6 * sc, e.y - 3 * sc, 4 * sc, 4 * sc);
+          ctx.fillRect(e.x + 2 * sc, e.y - 3 * sc, 4 * sc, 4 * sc);
+          if (e.bound > 0) {
+            // 縄の巻き
+            ctx.strokeStyle = colors.gold;
+            ctx.lineWidth = 2;
+            ctx.beginPath(); ctx.moveTo(e.x - rr, e.y + 2); ctx.lineTo(e.x + rr, e.y + 2); ctx.stroke();
+          }
+        }
+
+        // 忍具の縄
+        const p = game.player;
+        if (game.rope) {
+          const R = game.rope;
+          ctx.strokeStyle = colors.gold;
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.moveTo(p.x, p.y);
+          ctx.lineTo(p.x + R.dir.x * R.len, p.y + R.dir.y * R.len);
+          ctx.stroke();
+          ctx.fillStyle = colors.ink;
+          ctx.fillRect(p.x + R.dir.x * R.len - 3, p.y + R.dir.y * R.len - 3, 6, 6);
+        }
+
+        // 咲耶（仮の図形: くノ一の丸い体と鉢巻き）
+        if (p && !(p.inv > 0 && k.frame % 8 < 4) && !(game.dying && k.frame % 6 < 3)) {
+          const bob = p.tc !== null ? Math.sin(p.step / 2) * 1.5 : 0;
+          ctx.fillStyle = colors.magenta;
+          ctx.beginPath(); ctx.arc(p.x, p.y + bob, 12, 0, Math.PI * 2); ctx.fill();
+          ctx.fillStyle = colors.panel;
+          ctx.fillRect(p.x - 12, p.y + bob - 6, 24, 5);
+          ctx.fillStyle = "#fff";
+          const ex = p.face.x * 4, ey = p.face.y * 3;
+          ctx.fillRect(p.x - 5 + ex, p.y + bob - 5 + ey, 3, 3);
+          ctx.fillRect(p.x + 2 + ex, p.y + bob - 5 + ey, 3, 3);
+        }
+
+        // 点数の吹き出し
+        ctx.font = k.retro.font(10);
+        ctx.textAlign = "center";
+        for (const f of game.fx) {
+          ctx.fillStyle = k.retro.alpha(colors.gold, Math.min(1, f.t / 20));
+          ctx.fillText(f.text, f.x, f.y);
+        }
+
+        // HUD は kit の共通部品
         k.hud.score();
         k.hud.roster();
         k.hud.lives();
-        k.hud.gauge({ label: "FUEL", ratio: game.fuel / 100 });
-        ctx.font = k.retro.font(10);
-        ctx.fillStyle = colors.dim;
-        ctx.textAlign = "right";
-        ctx.fillText(`TIME ${Math.max(0, Math.ceil((DURATION - game.timer) / 60))}`, W - 16, 80);
+        if (game.rope && game.rope.hit) k.hud.gauge({ label: "BIND", ratio: game.rope.hit.bound / BIND_MAX });
+
+        if (game.intro > 0) {
+          ctx.fillStyle = k.retro.alpha(colors.bg, 0.6);
+          ctx.fillRect(0, H / 2 - 40, W, 70);
+          ctx.fillStyle = colors.gold;
+          ctx.font = k.retro.font(20);
+          ctx.fillText(L.name, W / 2, H / 2);
+          ctx.fillStyle = colors.ink;
+          ctx.font = k.retro.font(10);
+          ctx.fillText(`FIND ${L.cnp.length} CNP`, W / 2, H / 2 + 22);
+        } else if (game.exit && k.frame % 60 < 40) {
+          ctx.fillStyle = colors.gold;
+          ctx.font = k.retro.font(10);
+          ctx.fillText("EXIT OPEN!", W / 2, 84);
+        }
         ctx.textAlign = "left";
       },
     });
 
-    function fire() {
-      if (game.ship) game.shots.push({ x: game.ship.x + 14, y: game.ship.y });
-    }
     // 救出キャラ・スコアは kit が持っているので、終わりはクリアかどうかだけ渡せばよい
     function end(cleared) {
-      kit.gameOver({ cleared, progress: (game.timer / DURATION) * 100 });
+      kit.gameOver({ cleared, progress: (kit.cnp.run.count / 11) * 100 });
     }
     // 遊び方はランキングより上に出す
     document.querySelector(".sk-leaderboard").before(document.getElementById("how"));
