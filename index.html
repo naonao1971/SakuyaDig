@@ -52,7 +52,8 @@
       <li>敵は忍具（長押し）で縛りきって倒すか、真下を掘って岩を落としてつぶします。縛られている敵には触れても平気</li>
       <li>時間がたつと、30秒ごとに敵が少しずつ速くなります（5段まで。左上の SPEED の目盛り）</li>
       <li>忍者は、縦か横に並ぶと0.3秒止まってから手裏剣を投げてきます（3マス飛び、土も抜ける）。列をずらすか、忍具の縄で叩き落とそう</li>
-      <li>その層の CNP をそろえると下への穴が開きます。3層で 11体そろえたら、地上の出口へ</li>
+      <li>その層の CNP をそろえると下への穴が開きます。倒さなかった敵は、次の層に地上から追いかけてきます</li>
+      <li>最後の層（天守の地下蔵）は、CNP をそろえて敵を全員倒すと地上の出口が開きます。岩でまとめてつぶすと高得点</li>
       <li>スマホ: 左半分を押したまま倒して移動（掘る） ・ 右下の X を長押しで忍具</li>
       <li>PC: 矢印 / WASD で移動（掘る） ・ X（長押し）で忍具 ・ P 一時停止 ・ M 音</li>
       <li>姉妹作: <a href="https://sakuya.naoblock.jp/">咲耶スクランブル</a> / <a href="https://rally.naoblock.jp/">咲耶Nounラリー</a> / <a href="https://jumpbug.naoblock.jp/">咲耶ジャンプバグ</a></li>
@@ -178,7 +179,8 @@
       for (let i = 0; i < SC * (T / S); i++) cellOpen[i] = 1;
     }
 
-    function buildLayer(idx) {
+    // carried: 前の層で倒しきれなかった敵の種類（kind）の配列。地上の左右の端から出てくる
+    function buildLayer(idx, carried = []) {
       const L = LAYERS[idx];
       paintTerrain(L);
       const used = new Set();
@@ -210,6 +212,17 @@
           break;
         }
       }
+
+      // 持ち越しの敵: 地上の段の、咲耶のスタート地点から離れた左右の端から出る。
+      // 早めに土の中へもぐってくるよう、すり抜けまでの時間を短くする
+      const SURFACE_COLS = [1, COLS - 2, 4, COLS - 5, 7, COLS - 8, 2, COLS - 3, 5, COLS - 6];
+      carried.forEach((kind, i) => {
+        const e = newEnemy(SURFACE_COLS[i % SURFACE_COLS.length], 0, L, kind);
+        e.ghostT = rint(90, 240);
+        e.carried = true;
+        game.enemies.push(e);
+      });
+      game.carried = carried.length;
 
       // 岩: 下が土のマスに置く
       game.rocks = [];
@@ -575,6 +588,7 @@
       game.shots = [];
       for (const e of game.enemies) if (e.alive && !e.crushed) resetEnemy(e);
     }
+    const enemiesLeft = () => game.enemies.filter((e) => e.alive).length;
     function checkCnp() {
       const p = game.p;
       for (const k of game.cnps) {
@@ -587,9 +601,9 @@
           game.pops.push({ x: cx(k.c), y: cy(k.r) - 10, t: 40, text: k.ch.label });
         }
       }
-      if (!game.exit && game.cnps.every((k) => k.got)) {
-        // 最後の層は地上の出口、それ以外は下への穴
-        const last = game.layer === LAYERS.length - 1;
+      // 最後の層は、CNP をそろえたうえで敵を全員倒すと地上の出口が開く。それ以外の層は CNP だけで下への穴が開く
+      const last = game.layer === LAYERS.length - 1;
+      if (!game.exit && game.cnps.every((k) => k.got) && (!last || enemiesLeft() === 0)) {
         game.exit = last ? { c: START.c, r: 0, up: true } : { c: rint(3, 17), r: ROWS - 1, up: false };
         kit.sfx.bonus();
       }
@@ -720,8 +734,10 @@
         }
         if (game.state === "down") {
           if (--game.t <= 0) {
+            // 倒さなかった敵は次の層へ持ち越す（つぶされて落ちている途中の敵は倒したものとみなす）
+            const carried = game.enemies.filter((e) => e.alive && !e.crushed).map((e) => e.kind);
             game.layer++;
-            buildLayer(game.layer);
+            buildLayer(game.layer, carried);
             game.state = "intro";
             game.t = 120;
           }
@@ -788,7 +804,31 @@
         ctx.fillText(L.name, W - 16, 68);
         ctx.restore();
 
-        if (game.state === "intro") k.retro.caption(L.en, L.name + " ― CNP " + L.cnp.length + "体を掘り出せ");
+        if (game.state === "intro") {
+          const last = game.layer === LAYERS.length - 1;
+          const goal = last ? `CNP ${L.cnp.length}体と 敵の全滅` : `CNP ${L.cnp.length}体を掘り出せ`;
+          k.retro.caption(L.en, `${L.name} ― ${goal}`);
+          if (game.carried) {
+            ctx.save();
+            ctx.textAlign = "center";
+            ctx.font = k.retro.fontBody(14);
+            ctx.fillStyle = k.retro.colors.danger;
+            ctx.fillText(`前の層で残した 敵${game.carried}体が 地上から来る`, W / 2, H / 2 + 72);
+            ctx.restore();
+          }
+        } else if (game.state === "play" && game.layer === LAYERS.length - 1) {
+          // 最後の層は、残りの敵の数を出す。CNP がそろったのに敵が残っていたら点滅で知らせる
+          const left = enemiesLeft();
+          const done = game.cnps.every((c) => c.got);
+          if (left > 0) {
+            ctx.save();
+            ctx.textAlign = "center";
+            ctx.font = k.retro.fontBody(14);
+            ctx.fillStyle = !done ? k.retro.colors.dim : k.retro.blinkOn(20) ? k.retro.colors.danger : k.retro.colors.ink;
+            ctx.fillText(done ? `あと 敵${left}体 ― 全員倒すと出口が開く` : `敵 のこり${left}体`, W / 2, H - 6);
+            ctx.restore();
+          }
+        }
         else if (game.state === "down") k.retro.caption("DIG DOWN!", "つぎの層へ");
         else if (game.state === "clear" && game.bonus) {
           const b = game.bonus;
