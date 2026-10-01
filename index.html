@@ -31,7 +31,7 @@
   <meta name="twitter:image" content="https://dig.naoblock.jp/ogp.png" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/naonao1971/sakuya-kit@0.4.0/kit.css" />
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/naonao1971/sakuya-kit@0.5.0/kit.css" />
   <!-- sk:head ここまで -->
   <style>
     /* 遊び方。canvas の下、ランキングの前に置く */
@@ -54,7 +54,7 @@
       <li>忍者は、縦か横に並ぶと0.3秒止まってから手裏剣を投げてきます（3マス飛び、土も抜ける）。列をずらすか、忍具の縄で叩き落とそう</li>
       <li>その層の CNP をそろえると下への穴が開きます。倒さなかった敵は、次の層に地上から追いかけてきます</li>
       <li>最後の層（天守の地下蔵）は、CNP をそろえて敵を全員倒すと地上の出口が開きます。岩でまとめてつぶすと高得点</li>
-      <li>スマホ: 左半分を押したまま倒して移動（掘る） ・ 右下の X を長押しで忍具</li>
+      <li>スマホ: 左半分を押したまま倒して移動（掘る） ・ A を長押しで忍具 ・ ⚙ で音・全画面の設定</li>
       <li>PC: 矢印 / WASD で移動（掘る） ・ X（長押し）で忍具 ・ P 一時停止 ・ M 音</li>
       <li>姉妹作: <a href="https://sakuya.naoblock.jp/">咲耶スクランブル</a> / <a href="https://rally.naoblock.jp/">咲耶Nounラリー</a> / <a href="https://jumpbug.naoblock.jp/">咲耶ジャンプバグ</a></li>
     </ul>
@@ -63,7 +63,7 @@
   <script type="module">
     // 共通部分は sakuya-kit（https://github.com/naonao1971/sakuya-kit）。版を上げるときは
     // kit.css と同じ番号にそろえ、CHANGELOG を読んでから実機で確かめる
-    import { createKit } from "https://cdn.jsdelivr.net/gh/naonao1971/sakuya-kit@0.4.0/kit.js";
+    import { createKit } from "https://cdn.jsdelivr.net/gh/naonao1971/sakuya-kit@0.5.0/kit.js";
 
     // ===== 盤面 =====
     // 1マス 32px の 30x14。いちばん上の段は地上（最初から通れる）。
@@ -714,7 +714,9 @@
       controls: {
         stick: true,
         stickDigital4: false, // 斜めに倒すと階段状に掘れるよう、向きはゲーム側で読む（wantDir）
-        buttons: [{ id: "tool", label: "X", ariaLabel: "忍具", keys: ["KeyX", "Space"], primary: true }],
+        // シリーズ共通のボタン配置（F3）: A と ⚙ 設定。音・全画面は ⚙ の中
+        layout: "ab",
+        buttons: [{ id: "tool", slot: "A", hint: "TOOL", ariaLabel: "忍具（長押し）", keys: ["KeyX", "Space"] }],
       },
       share: {
         when: "clear",
@@ -722,7 +724,7 @@
       },
       help: {
         pc: "矢印/WASDで移動（掘る）、X長押しで忍具、Mで音（Pキーで一時停止）",
-        mobile: "左半分を押したまま倒して移動（掘る）。右下の X を長押しで忍具",
+        mobile: "左半分を押したまま倒して移動（掘る）。A を長押しで忍具、⚙ で設定",
         playing: "CNP を掘り出そう ― 敵は忍具で縛るか、岩を落としてつぶす",
       },
       cutscenes: {},
